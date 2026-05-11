@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="lt">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Burbulų mandala • Atsipalaidavimas</title>
+  
+  <style>
+    :root {
+      --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      --color-text-secondary: #b8b0d8;
+    }
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+
+    body {
+      background: #0a0519;
+      color: #fff;
+      font-family: var(--font-sans);
+      overflow: hidden;
+      height: 100dvh;
+    }
+
+    #wrap {
+      display: flex;
+      flex-direction: column;
+      min-height: 100dvh;
+      max-width: 480px;
+      margin: 0 auto;
+    }
+
+    #sky {
+      position: relative;
+      flex: 1;
+      min-height: 460px;
+      overflow: hidden;
+      border-radius: 20px;
+      background: linear-gradient(160deg,#1a0a2e 0%,#2d1155 40%,#0f2a4a 100%);
+      margin: 8px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    }
+
+    #canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      inset: 0;
+      touch-action: none;
+    }
+
+    #hud { padding: 14px 16px 8px; }
+    .hud-row { display:flex; align-items:center; gap:10px; }
+
+    .stat-pill {
+      display:flex; align-items:center; gap:6px;
+      border-radius:20px; padding:7px 14px;
+      border:0.5px solid; flex:1; min-width:0;
+    }
+    .stat-pill.pts { background:rgba(127,119,221,0.13); border-color:rgba(127,119,221,0.35); }
+    .stat-pill.combo { background:rgba(29,158,117,0.12); border-color:rgba(29,158,117,0.35); }
+    .stat-pill.lvl { background:rgba(212,83,126,0.12); border-color:rgba(212,83,126,0.35); }
+
+    .stat-label { font-size:11px; color:var(--color-text-secondary); white-space:nowrap; }
+    .stat-val { font-size:18px; font-weight:500; margin-left:auto; }
+
+    .pts .stat-val { color:#9b94f0; }
+    .combo .stat-val { color:#1D9E75; }
+    .lvl .stat-val { color:#D4537E; }
+
+    #hint-bar {
+      display:flex; align-items:center; justify-content:center;
+      min-height:32px; padding:0 16px 14px;
+    }
+    #hint {
+      font-size:13px; color:var(--color-text-secondary);
+      text-align:center; transition:opacity .5s;
+    }
+    #hint.fade { opacity:0; }
+
+    #toast-area {
+      position:absolute; top:12px; left:0; right:0;
+      display:flex; flex-direction:column; align-items:center;
+      gap:6px; pointer-events:none; z-index:10;
+    }
+
+    .toast {
+      padding:6px 18px; border-radius:20px;
+      font-size:13px; font-weight:500;
+      animation:toastUp 2.2s ease forwards;
+    }
+    .toast.joy { background:rgba(127,119,221,0.92); color:#fff; }
+    .toast.merge { background:rgba(29,158,117,0.92); color:#fff; }
+    .toast.gong { background:rgba(212,83,126,0.92); color:#fff; }
+
+    @keyframes toastUp {
+      0%{opacity:0;transform:translateY(12px)}
+      15%{opacity:1;transform:translateY(0)}
+      75%{opacity:1}
+      100%{opacity:0;transform:translateY(-16px)}
+    }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="hud">
+      <div class="hud-row">
+        <div class="stat-pill pts"><span class="stat-label">taškai</span><span class="stat-val" id="pts">0</span></div>
+        <div class="stat-pill combo"><span class="stat-label">combo</span><span class="stat-val" id="combo">x1</span></div>
+        <div class="stat-pill lvl"><span class="stat-label">lygis</span><span class="stat-val" id="lvl">1</span></div>
+      </div>
+    </div>
+
+    <div id="sky">
+      <canvas id="canvas"></canvas>
+      <div id="toast-area"></div>
+    </div>
+
+    <div id="hint-bar"><div id="hint">Lieskite burbulą ✦</div></div>
+  </div>
+
+  <script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const sky = document.getElementById('sky');
+const ptsEl = document.getElementById('pts');
+const comboEl = document.getElementById('combo');
+const lvlEl = document.getElementById('lvl');
+const hintEl = document.getElementById('hint');
+const toastArea = document.getElementById('toast-area');
+
+let W, H, bubbles = [], particles = [], sparkles = [], ripples = [];
+let selected = null, points = 0, combo = 1, comboTimer = 0, level = 1, lastTime = 0;
+let audioCtx = null;
+
+const PALETTES = [
+  {h:260,s:75,l:70}, {h:175,s:60,l:55}, {h:340,s:65,l:65},
+  {h:45,s:88,l:62}, {h:200,s:70,l:60}, {h:300,s:55,l:65}, {h:160,s:60,l:58}
+];
+
+const STARS = Array.from({length:60}, () => ({
+  x: Math.random(), y: Math.random(),
+  r: Math.random()*1.2 + 0.3,
+  a: Math.random()*0.6 + 0.2,
+  tw: Math.random()*4 + 2
+}));
+
+function resize(){
+  const r = sky.getBoundingClientRect();
+  W = r.width || 360; 
+  H = r.height || 460;
+  canvas.width = W; 
+  canvas.height = H;
+}
+
+function getAC(){
+  if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function tone(freq, type, vol, dur, delay = 0){
+  try{
+    const ac = getAC();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.connect(g); g.connect(ac.destination);
+    o.type = type; o.frequency.value = freq;
+    const t = ac.currentTime + delay;
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.start(t); o.stop(t + dur);
+  }catch(e){}
+}
+
+function playPop(r){
+  const f = 280 + r*8;
+  tone(f,'sine',0.14,0.9);
+  tone(f*1.5,'sine',0.07,0.5,0.05);
+}
+
+function playMerge(petals){
+  const base = petals >= 8 ? 261 : 329;
+  [base, base*1.25, base*1.5, base*2].forEach((f,i) => tone(f,'sine',0.14-i*0.02,1.4,i*0.07));
+}
+
+function playGong(){
+  [65,130,195,260,390].forEach((f,i) => tone(f,'sine',[0.25,0.16,0.11,0.07,0.04][i],4,i*0.03));
+  tone(520,'sine',0.05,2,0.1);
+}
+
+function playSelect(){ tone(440,'sine',0.1,0.4); tone(550,'sine',0.06,0.3,0.06); }
+function playJoy(){ [523,659,784].forEach((f,i) => tone(f,'sine',0.12,0.6,i*0.09)); }
+
+function showToast(txt, type='joy'){
+  const d = document.createElement('div');
+  d.className = `toast ${type}`;
+  d.textContent = txt;
+  toastArea.appendChild(d);
+  setTimeout(() => d.remove(), 2300);
+}
+
+function showHint(txt, dur=2800){
+  hintEl.textContent = txt;
+  hintEl.classList.remove('fade');
+  clearTimeout(hintEl._t);
+  hintEl._t = setTimeout(() => hintEl.classList.add('fade'), dur);
+}
+
+function addPoints(n){
+  const earned = Math.round(n * combo);
+  points += earned;
+  ptsEl.textContent = points;
+  level = Math.floor(points / 100) + 1;
+  lvlEl.textContent = level;
+  comboTimer = 180;
+  combo = Math.min(combo + 0.5, 5);
+  comboEl.textContent = 'x' + combo.toFixed(1).replace('.0','');
+}
+
+// Klasės
+class Particle{
+  constructor(x,y,col,vx,vy){
+    this.x=x;this.y=y;this.col=col;
+    this.vx=vx;this.vy=vy;
+    this.life=1;this.r=Math.random()*3+1.5;
+  }
+  update(){
+    this.x+=this.vx;this.y+=this.vy;
+    this.vy+=0.06;this.vx*=0.97;
+    this.life-=0.025;
+    return this.life>0;
+  }
+  draw(){
+    ctx.save();
+    ctx.globalAlpha=this.life*0.85;
+    ctx.beginPath();ctx.arc(this.x,this.y,this.r,0,Math.PI*2);
+    ctx.fillStyle=`hsla(${this.col.h},${this.col.s}%,${this.col.l+15}%,1)`;
+    ctx.fill();ctx.restore();
+  }
+}
+
+class Sparkle{
+  constructor(x,y,col){
+    this.x=x;this.y=y;this.col=col;
+    this.angle=Math.random()*Math.PI*2;
+    this.dist=Math.random()*40+15;
+    this.life=1;this.size=Math.random()*4+2;
+    this.speed=Math.random()*0.04+0.02;
+  }
+  update(){this.life-=this.speed;return this.life>0;}
+  draw(){
+    const px=this.x+Math.cos(this.angle)*this.dist*(1-this.life);
+    const py=this.y+Math.sin(this.angle)*this.dist*(1-this.life);
+    ctx.save();ctx.globalAlpha=this.life*0.9;
+    ctx.beginPath();
+    const s=this.size*this.life;
+    ctx.moveTo(px,py-s);ctx.lineTo(px+s*.4,py-s*.4);ctx.lineTo(px+s,py);
+    ctx.lineTo(px+s*.4,py+s*.4);ctx.lineTo(px,py+s);ctx.lineTo(px-s*.4,py+s*.4);
+    ctx.lineTo(px-s,py);ctx.lineTo(px-s*.4,py-s*.4);ctx.closePath();
+    ctx.fillStyle=`hsla(${this.col.h},90%,80%,1)`;ctx.fill();ctx.restore();
+  }
+}
+
+class Ripple{
+  constructor(x,y,col){this.x=x;this.y=y;this.col=col;this.life=1;this.r=10;}
+  update(){this.life-=0.03;this.r+=3;return this.life>0;}
+  draw(){
+    ctx.save();ctx.globalAlpha=this.life*0.4;
+    ctx.beginPath();ctx.arc(this.x,this.y,this.r,0,Math.PI*2);
+    ctx.strokeStyle=`hsla(${this.col.h},${this.col.s}%,${this.col.l+20}%,1)`;
+    ctx.lineWidth=1.5;ctx.stroke();ctx.restore();
+  }
+}
+
+class Bubble{
+  constructor(x,y,r,col){
+    this.x=x;this.y=y;this.r=r;this.col=col;
+    this.vx=(Math.random()-.5)*0.5;
+    this.vy=-Math.random()*0.4-0.15;
+    this.alpha=0;this.life=1;
+    this.born=performance.now();
+    this.wobble=Math.random()*Math.PI*2;
+    this.wSpeed=Math.random()*0.8+0.5;
+    this.selected=false;this.mandalaPetals=0;
+    this.rotSpeed=(Math.random()-.5)*0.3;
+    this.rotation=0;
+    this.pulse=0;this.pulseDir=1;
+  }
+  get age(){return(performance.now()-this.born)/1000;}
+  update(dt){
+    this.alpha=Math.min(1,this.alpha+dt*2);
+    this.life=Math.max(0,1-Math.pow(Math.max(0,this.age-7)/5,1.5));
+    this.x+=this.vx*dt*28;
+    this.y+=this.vy*dt*22;
+    this.vx*=0.999;this.vy*=0.999;
+    this.wobble+=dt*this.wSpeed;
+    this.rotation+=dt*this.rotSpeed;
+    this.pulse+=dt*this.pulseDir*2.5;
+    if(this.pulse>1||this.pulse<0) this.pulseDir*=-1;
+
+    if(this.x<this.r+5){this.vx=Math.abs(this.vx);this.x=this.r+5;}
+    if(this.x>W-this.r-5){this.vx=-Math.abs(this.vx);this.x=W-this.r-5;}
+    if(this.y<this.r+5){this.vy=Math.abs(this.vy);this.y=this.r+5;}
+    if(this.y>H-this.r-5){this.vy=-Math.abs(this.vy);this.y=H-this.r-5;}
+
+    return this.life>0.01;
+  }
+  draw(){
+    const a = this.alpha * this.life;
+    const wr = this.r + Math.sin(this.wobble)*2.5;
+    ctx.save(); ctx.globalAlpha = a;
+    if(this.mandalaPetals > 0){
+      this.drawMandala(wr);
+    } else {
+      this.drawBubble(wr);
+    }
+    if(this.selected){
+      const ringR = wr + 6 + Math.sin(this.age*5)*3;
+      ctx.beginPath(); ctx.arc(this.x,this.y,ringR,0,Math.PI*2);
+      ctx.strokeStyle = `hsla(${this.col.h},90%,82%,${0.7+this.pulse*0.3})`;
+      ctx.lineWidth = 2; ctx.setLineDash([5,5]); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(this.x,this.y,ringR+8,0,Math.PI*2);
+      ctx.strokeStyle = `hsla(${this.col.h},90%,82%,0.2)`;
+      ctx.lineWidth = 1; ctx.stroke();
+    }
+    ctx.restore();
+  }
+  drawBubble(wr){ /* ... (tas pats kaip originale) ... */ 
+    const c = this.col;
+    ctx.beginPath(); ctx.arc(this.x,this.y,wr,0,Math.PI*2);
+    const g = ctx.createRadialGradient(this.x-wr*.35,this.y-wr*.35,wr*.05,this.x,this.y,wr);
+    g.addColorStop(0,`hsla(${c.h},${c.s}%,${c.l+22}%,0.65)`);
+    g.addColorStop(0.4,`hsla(${c.h},${c.s}%,${c.l}%,0.22)`);
+    g.addColorStop(0.85,`hsla(${c.h},${c.s}%,${c.l-8}%,0.10)`);
+    g.addColorStop(1,`hsla(${c.h},${c.s}%,${c.l-15}%,0.04)`);
+    ctx.fillStyle = g; ctx.fill();
+    ctx.strokeStyle = `hsla(${c.h},${c.s}%,${c.l+18}%,0.5)`; ctx.lineWidth=1.2; ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(this.x-wr*.25,this.y-wr*.28,wr*.18,wr*.1,-0.5,0,Math.PI*2);
+    ctx.fillStyle = `hsla(${c.h},80%,96%,0.35)`; ctx.fill();
+  }
+  drawMandala(wr){ /* ... (tas pats kaip originale) ... */ 
+    const c = this.col; const n = this.mandalaPetals;
+    ctx.save(); ctx.translate(this.x,this.y); ctx.rotate(this.rotation);
+    for(let p=0;p<n;p++){
+      ctx.save(); ctx.rotate((Math.PI*2/n)*p);
+      const g=ctx.createRadialGradient(0,-wr*.3,0,0,-wr*.65,wr*.55);
+      g.addColorStop(0,`hsla(${c.h},${c.s}%,${c.l+18}%,0.55)`);
+      g.addColorStop(0.5,`hsla(${c.h},${c.s}%,${c.l}%,0.38)`);
+      g.addColorStop(1,`hsla(${c.h},${c.s}%,${c.l-10}%,0.04)`);
+      ctx.beginPath(); ctx.ellipse(0,-wr*.55,wr*.28,wr*.58,0,0,Math.PI*2);
+      ctx.fillStyle=g; ctx.fill(); ctx.restore();
+    }
+    for(let p=0;p<n;p++){
+      ctx.save(); ctx.rotate((Math.PI*2/n)*p + Math.PI/n);
+      const g2=ctx.createRadialGradient(0,-wr*.2,0,0,-wr*.4,wr*.35);
+      g2.addColorStop(0,`hsla(${(c.h+40)%360},${c.s}%,${c.l+10}%,0.3)`);
+      g2.addColorStop(1,`hsla(${(c.h+40)%360},${c.s}%,${c.l}%,0.0)`);
+      ctx.beginPath(); ctx.ellipse(0,-wr*.3,wr*.16,wr*.32,0,0,Math.PI*2);
+      ctx.fillStyle=g2; ctx.fill(); ctx.restore();
+    }
+    ctx.beginPath(); ctx.arc(0,0,wr*.38,0,Math.PI*2);
+    const gc=ctx.createRadialGradient(0,0,0,0,0,wr*.38);
+    gc.addColorStop(0,`hsla(${c.h},95%,${c.l+25}%,0.8)`);
+    gc.addColorStop(0.6,`hsla(${c.h},${c.s}%,${c.l}%,0.4)`);
+    gc.addColorStop(1,`hsla(${c.h},${c.s}%,${c.l-5}%,0.1)`);
+    ctx.fillStyle=gc; ctx.fill();
+    ctx.strokeStyle=`hsla(${c.h},90%,${c.l+20}%,0.6)`; ctx.lineWidth=1; ctx.stroke();
+    ctx.restore();
+  }
+  burst(){
+    for(let i=0;i<14;i++){
+      const a=Math.random()*Math.PI*2;
+      const s=Math.random()*3+1.5;
+      particles.push(new Particle(this.x,this.y,this.col,Math.cos(a)*s,Math.sin(a)*s-1));
+    }
+    for(let i=0;i<8;i++) sparkles.push(new Sparkle(this.x,this.y,this.col));
+    ripples.push(new Ripple(this.x,this.y,this.col));
+  }
+}
+
+function spawnBubble(){
+  if(bubbles.length >= 16) return;
+  const r = 16 + Math.random()*26;
+  const m = r + 12;
+  const x = m + Math.random()*(W - m*2);
+  const y = m + Math.random()*(H - m*2);
+  const col = PALETTES[Math.floor(Math.random()*PALETTES.length)];
+  const b = new Bubble(x,y,r,col);
+  bubbles.push(b);
+  const f = 200 + Math.random()*500;
+  tone(f,'sine',0.08,1.1);
+  tone(f*1.5,'triangle',0.04,0.7,0.05);
+}
+
+function dist(a,b){ return Math.hypot(a.x-b.x,a.y-b.y); }
+
+function tryMerge(a,b){
+  if(!a || !b || a===b) return false;
+  if(dist(a,b) < a.r + b.r + 16){
+    a.burst(); b.burst();
+    const mx = (a.x+b.x)/2, my = (a.y+b.y)/2;
+    const nr = Math.min(Math.sqrt(a.r*a.r + b.r*b.r)*0.96, 70);
+    const col = Math.random()<0.5 ? a.col : b.col;
+    const nb = new Bubble(mx, my, nr, col);
+    nb.mandalaPetals = Math.min((a.mandalaPetals||0) + (b.mandalaPetals||0) + 4, 20);
+    nb.alpha = 1;
+    bubbles = bubbles.filter(x => x!==a && x!==b);
+    bubbles.push(nb);
+    const pts = nb.mandalaPetals*8 + 10;
+    addPoints(pts);
+    for(let i=0;i<20;i++) sparkles.push(new Sparkle(mx,my,col));
+    for(let i=0;i<3;i++) ripples.push(new Ripple(mx+Math.random()*20-10, my+Math.random()*20-10, col));
+
+    if(nb.mandalaPetals >= 16){
+      showToast('🌸 Didžioji mandala! +' + Math.round(pts*combo), 'gong');
+      showHint('Nuostabi mandala! Kurkite dar daugiau ✦✦✦');
+      playGong();
+    } else if(nb.mandalaPetals >= 10){
+      showToast('✦ Mandala! +' + Math.round(pts*combo), 'merge');
+      showHint('Puiku! Mandala auga ✦✦');
+      playMerge(nb.mandalaPetals);
+    } else {
+      showToast('💫 Sujungta! +' + Math.round(pts*combo), 'merge');
+      showHint('Sujungta! Tęskite ✦');
+      playMerge(4);
+    }
+    selected = null;
+    return true;
+  }
+  return false;
+}
+
+function drawBackground(){
+  ctx.clearRect(0,0,W,H);
+  const now = performance.now()/1000;
+  STARS.forEach(s => {
+    const tw = 0.5 + 0.5 * Math.sin(now/s.tw + s.x*99);
+    ctx.globalAlpha = s.a * tw;
+    ctx.beginPath(); ctx.arc(s.x*W, s.y*H, s.r, 0, Math.PI*2);
+    ctx.fillStyle = '#fff'; ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+
+function onTap(cx, cy){
+  let hit = null, minD = Infinity;
+  for(const b of bubbles){
+    const d = dist(b, {x:cx, y:cy});
+    if(d < b.r + 14 && d < minD){ minD = d; hit = b; }
+  }
+  if(!hit){
+    if(selected){ selected.selected = false; selected = null; }
+    return;
+  }
+  if(selected && selected !== hit){
+    const prev = selected; prev.selected = false; selected = null;
+    if(tryMerge(prev, hit)) return;
+    hit.selected = true; selected = hit;
+    playSelect(); showHint('Pasirinkta! Liesk kitą sujungti ✦');
+  } else if(selected === hit){
+    hit.selected = false; selected = null;
+    ripples.push(new Ripple(hit.x, hit.y, hit.col));
+    for(let i=0;i<6;i++) sparkles.push(new Sparkle(hit.x, hit.y, hit.col));
+    addPoints(2); playJoy();
+    showHint('Burbulas džiaugiasi! ✦');
+    showToast('+' + Math.round(2*combo) + ' ✦', 'joy');
+  } else {
+    hit.selected = true; selected = hit;
+    ripples.push(new Ripple(hit.x, hit.y, hit.col));
+    addPoints(1); playSelect();
+    showHint('Pasirinkta! Liesk kitą sujungti ✦');
+  }
+}
+
+canvas.addEventListener('pointerdown', e => {
+  const r = canvas.getBoundingClientRect();
+  onTap(
+    (e.clientX - r.left) * (W / r.width),
+    (e.clientY - r.top) * (H / r.height)
+  );
+});
+
+let spawnT = 0;
+function loop(ts){
+  const dt = Math.min((ts - lastTime)/1000, 0.05);
+  lastTime = ts;
+  spawnT += dt;
+  if(spawnT > 2.4){ spawnT = 0; spawnBubble(); }
+
+  comboTimer = Math.max(0, comboTimer - 1);
+  if(comboTimer === 0 && combo > 1){
+    combo = Math.max(1, combo - 0.5);
+    comboEl.textContent = 'x' + combo.toFixed(1).replace('.0','');
+  }
+
+  drawBackground();
+
+  if(selected){
+    bubbles.forEach(b => {
+      if(b === selected) return;
+      const d = dist(selected, b);
+      if(d < selected.r + b.r + 70){
+        const a = 0.15 * (1 - d / (selected.r + b.r + 70));
+        ctx.save(); ctx.globalAlpha = a;
+        ctx.strokeStyle = `hsla(${selected.col.h},80%,75%,1)`;
+        ctx.lineWidth = 1; ctx.setLineDash([4,7]);
+        ctx.beginPath(); ctx.moveTo(selected.x, selected.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        ctx.setLineDash([]); ctx.restore();
+      }
+    });
+  }
+
+  ripples = ripples.filter(r => { r.update(); r.draw(); return r.life > 0; });
+  bubbles = bubbles.filter(b => { const ok = b.update(dt); b.draw(); return ok; });
+  particles = particles.filter(p => { p.update(); p.draw(); return p.life > 0; });
+  sparkles = sparkles.filter(s => { s.update(); s.draw(); return s.life > 0; });
+
+  requestAnimationFrame(loop);
+}
+
+function init(){
+  resize();
+  for(let i = 0; i < 7; i++) setTimeout(() => spawnBubble(), i * 350);
+  showHint('Sveiki! Lieskite burbulus ✦');
+  tone(330,'sine',0.07,1);
+  tone(440,'sine',0.05,1.2,0.15);
+  tone(550,'sine',0.04,1,0.3);
+  lastTime = performance.now();
+  requestAnimationFrame(loop);
+}
+
+new ResizeObserver(resize).observe(sky);
+init();
+  </script>
+</body>
+</html>
